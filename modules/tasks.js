@@ -8,7 +8,7 @@ const TasksModule = {
 
   async loadData() {
     this.tasks = await DB.getAll('tasks');
-    this.people = await DB.getAll('people');
+    this.people = await DB.getAll('users');
     this.projects = await DB.getAll('projects');
   },
 

@@ -53,7 +53,13 @@ const DB = {
     const q = f.query(f.collection(db, storeName));
     const snap = await f.getDocs(q);
     const batch = f.writeBatch(db);
-    snap.forEach(doc => batch.delete(doc.ref));
+    const currentUid = window.AuthModule?.currentUser?.uid || window.AuthModule?.currentUser?.id;
+    snap.forEach(doc => {
+      if (storeName === 'users' && doc.id === currentUid) {
+        return; // Preserve the current logged-in user from lockout
+      }
+      batch.delete(doc.ref);
+    });
     await batch.commit();
   },
 
@@ -69,7 +75,7 @@ const DB = {
   },
 
   async exportAll() {
-    const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'people', 'tasks', 'settings'];
+    const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings'];
     const data = {};
     for (const store of stores) {
       data[store] = await this.getAll(store);
@@ -78,6 +84,21 @@ const DB = {
   },
 
   async importAll(data) {
+    // Identify current user to preserve them from lockout
+    let currentUserDoc = null;
+    const currentUid = window.AuthModule?.currentUser?.uid || window.AuthModule?.currentUser?.id;
+    if (currentUid) {
+      try {
+        const { db, f } = this.getFs();
+        const snap = await f.getDoc(f.doc(db, 'users', currentUid));
+        if (snap.exists()) {
+          currentUserDoc = snap.data();
+        }
+      } catch (e) {
+        console.warn("Could not fetch current user to preserve:", e);
+      }
+    }
+
     const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings'];
     for (const store of stores) {
       await this.clearStore(store);
@@ -88,6 +109,16 @@ const DB = {
           await this.put(store, item);
         }
       }
+    }
+
+    // Restore current user if they were deleted
+    if (currentUserDoc && currentUid) {
+      await this.put('users', {
+        id: currentUid,
+        ...currentUserDoc,
+        status: 'approved',
+        role: 'Mentor'
+      });
     }
   }
 };

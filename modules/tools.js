@@ -8,7 +8,7 @@ const ToolsModule = {
 
   async loadData() {
     this.tools = await DB.getAll('tools');
-    this.people = await DB.getAll('people');
+    this.people = await DB.getAll('users');
     this.locations = await DB.getAll('locations');
   },
 
