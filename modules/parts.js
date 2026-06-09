@@ -166,7 +166,7 @@ const PartsModule = {
                   ${assignee ? `<div class="flex items-center gap-1"><div class="avatar" style="width:22px;height:22px;font-size:9px">${initials(assignee.name)}</div><span class="text-sm">${escapeHTML(assignee.name)}</span></div>` : '<span class="text-muted">—</span>'}
                 </td>
                 <td data-label="Location">${escapeHTML(loc ? loc.name : '—')}${p.containerId ? `<span class="text-muted text-xs"> › ${escapeHTML(p.containerId)}</span>` : ''}</td>
-                <td data-label="Stock" class="text-right" style="font-weight:600;color:${(p.inStock||0)<(p.needed||0)?'var(--red)':'var(--text-0)'}">${p.inStock || 0}/${p.needed || 0}</td>
+                <td data-label="Stock" class="text-right">${getStockChip(p.inStock||0, p.needed||0, p.id)}</td>
                 <td data-label="Cost" class="text-right">${formatCurrency(p.unitCost)}</td>
                 <td data-label="Actions" class="text-right">
                   <div class="flex items-center justify-end gap-1">
@@ -403,7 +403,7 @@ const PartsModule = {
           <div><span class="text-muted text-xs">Vendor</span><div>${escapeHTML(vendor?.name || '—')}</div></div>
           <div><span class="text-muted text-xs">Location</span><div>${escapeHTML(loc?.name || '—')}${p.containerId ? ` › ${escapeHTML(p.containerId)}` : ''}</div></div>
           <div><span class="text-muted text-xs">Assigned To</span><div>${escapeHTML(assignee?.name || 'Unassigned')}</div></div>
-          <div><span class="text-muted text-xs">Stock / Needed</span><div style="font-weight:600;color:${(p.inStock||0)<(p.needed||0)?'var(--red)':'var(--text-0)'}">${p.inStock || 0} / ${p.needed || 0}</div></div>
+          <div><span class="text-muted text-xs">Stock / Needed</span><div>${getStockChip(p.inStock||0, p.needed||0, p.id)}</div></div>
           <div><span class="text-muted text-xs">Unit Cost</span><div>${formatCurrency(p.unitCost)}</div></div>
         </div>
         ${p.description ? `<div class="mt-3"><span class="text-muted text-xs">Description</span><p class="text-sm">${escapeHTML(p.description)}</p></div>` : ''}

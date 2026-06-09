@@ -25,6 +25,7 @@ const BomModule = {
         </div>
         <div class="toolbar-right" id="bomActions" style="display:none">
           <button class="btn btn-secondary" id="exportBomBtn"><i class="fa-solid fa-file-csv"></i> Export CSV</button>
+          <button class="btn btn-secondary" id="importBomBtn"><i class="fa-solid fa-file-import"></i> Add All from Project</button>
           <button class="btn btn-primary" id="addBomItemBtn"><i class="fa-solid fa-plus"></i> Add Item</button>
         </div>
       </div>
@@ -46,6 +47,7 @@ const BomModule = {
     document.getElementById('bomActions').style.display = '';
     document.getElementById('addBomItemBtn').onclick = () => this.showAddModal(projectId);
     document.getElementById('exportBomBtn').onclick = () => this.exportCSV(projectId);
+    document.getElementById('importBomBtn').onclick = () => this.showImportAllFromProjectModal(projectId);
 
     const items = this.boms.filter(b => b.projectId === projectId);
     
@@ -245,5 +247,67 @@ const BomModule = {
     a.download = `BOM_${p ? p.name : 'export'}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  },
+
+  async showImportAllFromProjectModal(projectId) {
+    const otherProjects = this.projects.filter(p => p.id !== projectId);
+    if (otherProjects.length === 0) {
+      return toast('No other projects available to import from', 'error');
+    }
+    const projOptions = otherProjects.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join('');
+    
+    const body = `
+      <div class="form-group">
+        <label class="form-label">Source Project</label>
+        <select class="form-select" id="importBomSourceProjectSelect">${projOptions}</select>
+      </div>
+      <p class="text-sm text-muted">This will copy all BOM items from the selected project into the current project. Existing items in this project's BOM will not be duplicated.</p>
+    `;
+    const footer = `
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="BomModule.importAllFromProject('${projectId}', this)">Import Items</button>
+    `;
+    openModal('Add All from Project', body, footer);
+  },
+
+  async importAllFromProject(targetProjectId, btn) {
+    if (btn) btn.disabled = true;
+    const sourceProjectId = document.getElementById('importBomSourceProjectSelect').value;
+    if (!sourceProjectId) {
+      if (btn) btn.disabled = false;
+      return toast('Please select a source project', 'error');
+    }
+
+    try {
+      const sourceItems = this.boms.filter(b => b.projectId === sourceProjectId);
+      const targetItems = this.boms.filter(b => b.projectId === targetProjectId);
+      const targetPartIds = new Set(targetItems.map(b => b.partId));
+
+      let addedCount = 0;
+      for (const item of sourceItems) {
+        if (!targetPartIds.has(item.partId)) {
+          const newId = await DB.add('bom_items', {
+            projectId: targetProjectId,
+            partId: item.partId,
+            qtyNeeded: item.qtyNeeded,
+            status: 'not_started'
+          });
+          const part = this.parts.find(p => p.id === item.partId);
+          if (window.HistoryModule) {
+            HistoryModule.log('create', 'bom_item', newId || 'new', part ? part.name : 'Unknown Part');
+          }
+          addedCount++;
+        }
+      }
+
+      toast(`Successfully imported ${addedCount} items!`, 'success');
+      closeModal();
+      await this.loadData();
+      this.renderBomForProject(targetProjectId);
+    } catch (err) {
+      console.error(err);
+      if (btn) btn.disabled = false;
+      toast('Failed to import items', 'error');
+    }
   }
 };

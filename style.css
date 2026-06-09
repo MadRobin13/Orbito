@@ -797,3 +797,39 @@ tbody tr { transition: background 0.1s; }
 
 /* Workspace Zones */
 .ws-zone.has-photo { border-width: 2px; }
+
+/* Spreadsheet Table Hover Highlight */
+.spreadsheet-table tbody tr:hover {
+  background: var(--accent-dim) !important;
+}
+
+/* Stock Chip Styles */
+.stock-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff !important;
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.stock-chip:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+}
+.stock-chip.stock-full {
+  background: linear-gradient(135deg, #059669, #10b981); /* Rich Emerald/Green */
+}
+.stock-chip.stock-green {
+  background: linear-gradient(135deg, #16a34a, #22c55e); /* Standard Green */
+}
+.stock-chip.stock-yellow {
+  background: linear-gradient(135deg, #d97706, #f59e0b); /* Amber/Yellow */
+  color: #1c1917 !important;
+}
+.stock-chip.stock-red {
+  background: linear-gradient(135deg, #dc2626, #ef4444); /* Red */
+}

@@ -88,6 +88,17 @@ function formatDate(ts) {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function getStockChip(inStock, needed, partId) {
+  const perc = needed ? (inStock / needed) * 100 : 0;
+  const thresholds = window.__stockThresholds || { high: 80, medium: 50, low: 10 };
+  let cls = 'stock-red';
+  if (perc >= thresholds.high) cls = 'stock-full';
+  else if (perc >= thresholds.medium) cls = 'stock-green';
+  else if (perc >= thresholds.low) cls = 'stock-yellow';
+  
+  return `<span class="stock-chip ${cls}" data-part-id="${partId}" title="${inStock}/${needed}">${inStock}/${needed}</span>`;
+}
+
 function formatCurrency(n) {
   if (n == null || isNaN(n)) return '—';
   return '$' + Number(n).toFixed(2);
@@ -253,6 +264,27 @@ async function renderSettings(container) {
         </div>
       </div>
       <div class="card" style="margin-bottom:20px">
+        <div class="card-header"><h3>Stock Thresholds</h3></div>
+        <div class="card-body">
+          <p class="text-sm text-muted" style="margin-bottom:12px">Customize percentage thresholds for inventory level colors.</p>
+          <div class="grid-3" style="gap:12px; margin-bottom:16px">
+            <div>
+              <label class="form-label">Full (>= %)</label>
+              <input type="number" class="form-input" id="thresholdHigh" value="${window.__stockThresholds?.high ?? 80}" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Medium (>= %)</label>
+              <input type="number" class="form-input" id="thresholdMedium" value="${window.__stockThresholds?.medium ?? 50}" min="0" max="100">
+            </div>
+            <div>
+              <label class="form-label">Low (>= %)</label>
+              <input type="number" class="form-input" id="thresholdLow" value="${window.__stockThresholds?.low ?? 10}" min="0" max="100">
+            </div>
+          </div>
+          <button class="btn btn-primary" id="saveThresholdsBtn"><i class="fa-solid fa-floppy-disk"></i> Save Thresholds</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:20px">
         <div class="card-header"><h3>Export Data</h3></div>
         <div class="card-body">
           <p class="text-sm text-muted" style="margin-bottom:12px">Download all your Orbito data as a JSON file. You can use this to back up or transfer data.</p>
@@ -291,6 +323,22 @@ async function renderSettings(container) {
     const t = e.target.value;
     document.documentElement.setAttribute('data-theme', t);
     localStorage.setItem('orbito-theme', t);
+  });
+
+  document.getElementById('saveThresholdsBtn').addEventListener('click', async () => {
+    const high = parseInt(document.getElementById('thresholdHigh').value) || 80;
+    const medium = parseInt(document.getElementById('thresholdMedium').value) || 50;
+    const low = parseInt(document.getElementById('thresholdLow').value) || 10;
+    if (high < medium || medium < low) {
+      return toast('Thresholds must be: Full >= Medium >= Low', 'error');
+    }
+    try {
+      await DB.put('settings', { id: 'stockThresholds', high, medium, low });
+      window.__stockThresholds = { high, medium, low };
+      toast('Stock thresholds saved!', 'success');
+    } catch (e) {
+      toast('Failed to save thresholds: ' + e.message, 'error');
+    }
   });
 
   document.getElementById('exportBtn').addEventListener('click', async () => {
@@ -335,8 +383,8 @@ async function renderSettings(container) {
   });
 
   document.getElementById('clearBtn').addEventListener('click', async () => {
-    if (confirm('Are you sure you want to delete ALL data? This cannot be undone.')) {
-      const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks'];
+    if (confirm('Are you sure you want to permanently delete all data from Orbito? This cannot be undone.')) {
+      const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items'];
       for (const store of stores) {
         await DB.clearStore(store);
       }
@@ -351,6 +399,90 @@ window.App = {
     // Theme init
     const savedTheme = localStorage.getItem('orbito-theme');
     if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+
+    // Load stock thresholds
+    try {
+      const settingsList = await DB.getAll('settings');
+      const thresholds = settingsList.find(s => s.id === 'stockThresholds');
+      if (thresholds) {
+        window.__stockThresholds = {
+          high: thresholds.high ?? 80,
+          medium: thresholds.medium ?? 50,
+          low: thresholds.low ?? 10
+        };
+      } else {
+        window.__stockThresholds = { high: 80, medium: 50, low: 10 };
+      }
+    } catch (e) {
+      console.error("Failed to load stock thresholds:", e);
+      window.__stockThresholds = { high: 80, medium: 50, low: 10 };
+    }
+
+    // Event delegation for stock chips quick edit
+    document.body.addEventListener('click', async (e) => {
+      const chip = e.target.closest('.stock-chip');
+      if (chip) {
+        e.preventDefault();
+        e.stopPropagation();
+        const partId = chip.dataset.partId;
+        if (partId) {
+          try {
+            const partsList = await DB.getAll('parts');
+            const part = partsList.find(p => p.id === partId);
+            if (!part) return;
+            
+            openModal('Quick Edit Stock', `
+              <div style="display:flex; flex-direction:column; gap:12px; padding: 10px 0;">
+                <div>
+                  <label class="form-label">In Stock</label>
+                  <input type="number" id="quickInStock" class="form-input" value="${part.inStock || 0}" min="0">
+                </div>
+                <div>
+                  <label class="form-label">Needed</label>
+                  <input type="number" id="quickNeeded" class="form-input" value="${part.needed || 0}" min="0">
+                </div>
+              </div>
+            `, `
+              <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+              <button class="btn btn-primary" id="saveQuickStockBtn">Save</button>
+            `);
+            
+            document.getElementById('saveQuickStockBtn').addEventListener('click', async () => {
+              const inStock = parseInt(document.getElementById('quickInStock').value) || 0;
+              const needed = parseInt(document.getElementById('quickNeeded').value) || 0;
+              
+              part.inStock = inStock;
+              part.needed = needed;
+              await DB.put('parts', part);
+              toast('Stock updated!', 'success');
+              if (window.HistoryModule) {
+                HistoryModule.log('update', 'part', partId, part.name, `Stock: ${inStock}/${needed}`);
+              }
+              closeModal();
+              
+              // Refresh active view
+              if (currentView === 'parts' && window.PartsModule) {
+                await PartsModule.loadData();
+                PartsModule.renderView();
+              } else if (currentView === 'spreadsheet' && window.SpreadsheetModule) {
+                await SpreadsheetModule.loadData();
+                SpreadsheetModule.renderRows();
+              } else if (currentView === 'bom' && window.BomModule) {
+                await BomModule.loadData();
+                if (document.getElementById('bomProjectSelect')) {
+                  const selVal = document.getElementById('bomProjectSelect').value;
+                  if (selVal) BomModule.renderBomForProject(selVal);
+                }
+              } else if (currentView === 'dashboard') {
+                navigate('dashboard');
+              }
+            });
+          } catch (err) {
+            console.error("Error loading part for quick edit:", err);
+          }
+        }
+      }
+    });
 
     // Sidebar nav clicks
     document.querySelectorAll('.nav-item[data-view]').forEach(el => {
@@ -420,12 +552,107 @@ window.App = {
       navigate(location.hash.slice(1) || 'dashboard');
     });
 
+async function showQuickAddSketchModal() {
+  const parts = await DB.getAll('parts');
+  if (parts.length === 0) {
+    toast("Please add at least one part first.", "error");
+    return;
+  }
+  const partOptions = parts.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join('');
+  
+  openModal('Quick Add Sketch', `
+    <div style="display:flex; flex-direction:column; gap:12px; padding: 10px 0;">
+      <div class="form-group">
+        <label class="form-label">Select Part</label>
+        <select class="form-select" id="quickSketchPartSelect">
+          ${partOptions}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Sketch Canvas</label>
+        <div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;background:#fff;touch-action:none">
+          <canvas id="quickSketchCanvas" width="400" height="300" style="display:block;width:100%;cursor:crosshair"></canvas>
+        </div>
+      </div>
+    </div>
+  `, `
+    <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-secondary" onclick="window.clearQuickSketch()">Clear</button>
+    <button class="btn btn-primary" onclick="window.saveQuickSketch()">Save Sketch</button>
+  `);
+
+  setTimeout(() => {
+    const canvas = document.getElementById('quickSketchCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    let drawing = false;
+
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    ctx.strokeStyle = '#000000';
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+
+    const getPos = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+    };
+
+    const start = (e) => { e.preventDefault(); drawing = true; const {x,y} = getPos(e); ctx.beginPath(); ctx.moveTo(x,y); };
+    const move = (e) => { e.preventDefault(); if (!drawing) return; const {x,y} = getPos(e); ctx.lineTo(x,y); ctx.stroke(); };
+    const stop = (e) => { if(e.cancelable) e.preventDefault(); drawing = false; };
+
+    canvas.addEventListener('mousedown', start);
+    canvas.addEventListener('mousemove', move);
+    canvas.addEventListener('mouseup', stop);
+    canvas.addEventListener('mouseout', stop);
+
+    canvas.addEventListener('touchstart', start, {passive:false});
+    canvas.addEventListener('touchmove', move, {passive:false});
+    canvas.addEventListener('touchend', stop);
+
+    window.clearQuickSketch = () => {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    };
+
+    window.saveQuickSketch = async () => {
+      const partId = document.getElementById('quickSketchPartSelect').value;
+      const dataUrl = canvas.toDataURL('image/png');
+      const partsList = await DB.getAll('parts');
+      const p = partsList.find(x => x.id === partId);
+      if (!p) return;
+      p.drawings = p.drawings || [];
+      p.drawings.push(dataUrl);
+      await DB.put('parts', p);
+      toast('Sketch saved to drawings!', 'success');
+      if (window.HistoryModule) {
+        HistoryModule.log('update', 'part', partId, p.name, 'Added quick sketch');
+      }
+      closeModal();
+      if (currentView === 'sketches' && window.SketchesModule) {
+        await SketchesModule.loadData();
+        SketchesModule.renderView();
+      } else if (currentView === 'parts' && window.PartsModule) {
+        await PartsModule.loadData();
+        PartsModule.renderView();
+      }
+    };
+  }, 100);
+}
+window.showQuickAddSketchModal = showQuickAddSketchModal;
+
     // Global FAB
     const fab = document.getElementById('globalFab');
     fab.style.display = '';
     fab.addEventListener('click', () => {
       openModal('Quick Add', `
-        <div class="grid-3" style="text-align:center">
+        <div class="grid-4" style="text-align:center">
           <button class="btn btn-secondary flex items-center justify-center" style="flex-direction:column;padding:20px;gap:10px;height:auto" onclick="closeModal();navigate('parts').then(()=>document.getElementById('addPartBtn').click())">
             <i class="fa-solid fa-screwdriver-wrench fa-2x text-blue" style="width:auto"></i>
             <span>Part</span>
@@ -437,6 +664,10 @@ window.App = {
           <button class="btn btn-secondary flex items-center justify-center" style="flex-direction:column;padding:20px;gap:10px;height:auto" onclick="closeModal();navigate('projects').then(()=>document.getElementById('addProjectBtn').click())">
             <i class="fa-solid fa-folder-plus fa-2x text-accent" style="width:auto"></i>
             <span>Project</span>
+          </button>
+          <button class="btn btn-secondary flex items-center justify-center" style="flex-direction:column;padding:20px;gap:10px;height:auto" onclick="closeModal();window.showQuickAddSketchModal()">
+            <i class="fa-solid fa-pen-nib fa-2x text-rose" style="width:auto"></i>
+            <span>Sketch</span>
           </button>
         </div>
       `, '');

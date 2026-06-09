@@ -75,7 +75,7 @@ const DB = {
   },
 
   async exportAll() {
-    const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings'];
+    const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items'];
     const data = {};
     for (const store of stores) {
       data[store] = await this.getAll(store);
@@ -99,11 +99,14 @@ const DB = {
       }
     }
 
-    const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings'];
-    for (const store of stores) {
+    const storesToClear = ['parts', 'projects', 'tasks', 'bom_items', 'tools', 'locations'];
+    for (const store of storesToClear) {
       await this.clearStore(store);
     }
     for (const store of Object.keys(data)) {
+      if (store === 'users' || store === 'vendors' || store === 'settings') {
+        continue; // Skip importing/overwriting these to keep existing people and shop data!
+      }
       if (Array.isArray(data[store])) {
         for (const item of data[store]) {
           await this.put(store, item);
