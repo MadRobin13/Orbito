@@ -1,11 +1,96 @@
-// db.js (Cloud Firestore Adapter)
+// db.js (Hybrid Firestore + IndexedDB Adapter)
+
+const LocalDB = {
+  _db: null,
+  init() {
+    return new Promise((resolve, reject) => {
+      if (this._db) return resolve(this._db);
+      const req = indexedDB.open('orbito_local_db', 1);
+      req.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items', 'history', 'walk_logs', 'pending_actions'];
+        stores.forEach(s => {
+          if (!db.objectStoreNames.contains(s)) {
+            db.createObjectStore(s, { keyPath: 'id' });
+          }
+        });
+      };
+      req.onsuccess = (e) => {
+        this._db = e.target.result;
+        resolve(this._db);
+      };
+      req.onerror = (e) => reject(e.target.error);
+    });
+  },
+  async getStore(storeName, mode = 'readonly') {
+    const db = await this.init();
+    const tx = db.transaction(storeName, mode);
+    return tx.objectStore(storeName);
+  },
+  async getAll(storeName) {
+    const store = await this.getStore(storeName);
+    return new Promise((resolve, reject) => {
+      const req = store.getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async getAllByIndex(storeName, indexName, value) {
+    const items = await this.getAll(storeName);
+    return items.filter(x => x[indexName] === value);
+  },
+  async put(storeName, data) {
+    if (!data.id) {
+      data.id = crypto.randomUUID ? crypto.randomUUID() : ("id_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9));
+    }
+    const store = await this.getStore(storeName, 'readwrite');
+    return new Promise((resolve, reject) => {
+      const req = store.put(data);
+      req.onsuccess = () => resolve(data.id);
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async add(storeName, data) {
+    return this.put(storeName, data);
+  },
+  async delete(storeName, id) {
+    const store = await this.getStore(storeName, 'readwrite');
+    return new Promise((resolve, reject) => {
+      const req = store.delete(id);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  },
+  async clearStore(storeName) {
+    const store = await this.getStore(storeName, 'readwrite');
+    const currentUid = window.AuthModule?.currentUser?.uid || window.AuthModule?.currentUser?.id;
+    
+    // In IndexedDB we can read and delete selectively
+    const all = await this.getAll(storeName);
+    for (const item of all) {
+      if (storeName === 'users' && item.id === currentUid) {
+        continue; // Preserve logged-in user
+      }
+      await this.delete(storeName, item.id);
+    }
+  }
+};
+
 const DB = {
+  isOffline() {
+    return !!window.__orbito_offline || !window.fsdb || !window.FirebaseMethods;
+  },
+
   getFs() {
+    if (this.isOffline()) throw new Error("Local DB Mode active");
     if (!window.fsdb || !window.FirebaseMethods) throw new Error("Firebase not initialized");
     return { db: window.fsdb, f: window.FirebaseMethods };
   },
 
   async getAll(storeName) {
+    if (this.isOffline()) {
+      return LocalDB.getAll(storeName);
+    }
     const { db, f } = this.getFs();
     const q = f.query(f.collection(db, storeName));
     const snap = await f.getDocs(q);
@@ -15,6 +100,9 @@ const DB = {
   },
 
   async getAllByIndex(storeName, indexName, value) {
+    if (this.isOffline()) {
+      return LocalDB.getAllByIndex(storeName, indexName, value);
+    }
     const { db, f } = this.getFs();
     const q = f.query(f.collection(db, storeName), f.where(indexName, '==', value));
     const snap = await f.getDocs(q);
@@ -24,9 +112,11 @@ const DB = {
   },
 
   async add(storeName, data) {
+    if (this.isOffline()) {
+      return LocalDB.add(storeName, data);
+    }
     const { db, f } = this.getFs();
     if (!data.id) {
-      // Auto-generate a guaranteed unique ID
       data.id = crypto.randomUUID ? crypto.randomUUID() : ("id_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9));
     }
     const docRef = f.doc(db, storeName, data.id);
@@ -35,6 +125,9 @@ const DB = {
   },
 
   async put(storeName, data) {
+    if (this.isOffline()) {
+      return LocalDB.put(storeName, data);
+    }
     const { db, f } = this.getFs();
     if (!data.id) throw new Error("ID required for put");
     const docRef = f.doc(db, storeName, data.id);
@@ -43,12 +136,18 @@ const DB = {
   },
 
   async delete(storeName, id) {
+    if (this.isOffline()) {
+      return LocalDB.delete(storeName, id);
+    }
     const { db, f } = this.getFs();
     const docRef = f.doc(db, storeName, id);
     await f.deleteDoc(docRef);
   },
 
   async clearStore(storeName) {
+    if (this.isOffline()) {
+      return LocalDB.clearStore(storeName);
+    }
     const { db, f } = this.getFs();
     const q = f.query(f.collection(db, storeName));
     const snap = await f.getDocs(q);
@@ -64,8 +163,13 @@ const DB = {
   },
 
   async addPendingAction(actionData) {
+    if (this.isOffline()) {
+      if (!actionData.id) {
+        actionData.id = crypto.randomUUID ? crypto.randomUUID() : ("pend_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9));
+      }
+      return LocalDB.put('pending_actions', actionData);
+    }
     const { db, f } = this.getFs();
-    // actionData should be { actionType: 'create'|'update'|'delete', targetCollection, targetId, data, requestedBy, timestamp }
     if (!actionData.id) {
       actionData.id = crypto.randomUUID ? crypto.randomUUID() : ("pend_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9));
     }
@@ -84,10 +188,9 @@ const DB = {
   },
 
   async importAll(data) {
-    // Identify current user to preserve them from lockout
     let currentUserDoc = null;
     const currentUid = window.AuthModule?.currentUser?.uid || window.AuthModule?.currentUser?.id;
-    if (currentUid) {
+    if (currentUid && !this.isOffline()) {
       try {
         const { db, f } = this.getFs();
         const snap = await f.getDoc(f.doc(db, 'users', currentUid));
@@ -97,6 +200,9 @@ const DB = {
       } catch (e) {
         console.warn("Could not fetch current user to preserve:", e);
       }
+    } else if (currentUid && this.isOffline()) {
+      const allUsers = await LocalDB.getAll('users');
+      currentUserDoc = allUsers.find(u => u.id === currentUid);
     }
 
     const storesToClear = ['parts', 'projects', 'tasks', 'bom_items', 'tools', 'locations'];
@@ -127,3 +233,4 @@ const DB = {
 };
 
 window.DB = DB;
+

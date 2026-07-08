@@ -1,2 +1,14 @@
 firebase-tools
 .firebase
+
+# Local environment / secret overrides
+# Note: .env is needed for deployment but contains sensitive data
+# For production, ensure your hosting platform has the .env file deployed
+.env.local
+.env.*.local
+.env
+
+*.json
+!package.json
+!package-lock.json
+sample_data.json

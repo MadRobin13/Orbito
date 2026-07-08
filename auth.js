@@ -3,18 +3,80 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebas
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
+function parseEnvText(text) {
+  const parsed = {};
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex === -1) continue;
+    const key = trimmed.slice(0, separatorIndex).trim();
+    let value = trimmed.slice(separatorIndex + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    parsed[key] = value;
+  }
+  return parsed;
+}
+
+async function loadFirebaseEnv() {
+  const runtimeEnv = (typeof window !== "undefined" && window.__ORBITO_ENV__) ? window.__ORBITO_ENV__ : {};
+  const buildEnv = import.meta.env ?? {};
+  const env = { ...buildEnv, ...runtimeEnv };
+
+  const requiredKeys = [
+    'VITE_FIREBASE_API_KEY',
+    'VITE_FIREBASE_AUTH_DOMAIN',
+    'VITE_FIREBASE_PROJECT_ID',
+    'VITE_FIREBASE_STORAGE_BUCKET',
+    'VITE_FIREBASE_MESSAGING_SENDER_ID',
+    'VITE_FIREBASE_APP_ID'
+  ];
+
+  if (requiredKeys.every(key => env[key])) {
+    return env;
+  }
+
+  try {
+    const response = await fetch('./.env', { cache: 'no-store' });
+    if (response.ok) {
+      return { ...env, ...parseEnvText(await response.text()) };
+    }
+  } catch (error) {
+    console.warn('Local .env file could not be loaded automatically.', error);
+  }
+
+  return env;
+}
+
+const env = await loadFirebaseEnv();
+
 const firebaseConfig = {
-  apiKey: "AIzaSyDo47kaPkgNqF6PID07SxNyIi0D3wRcEZM",
-  authDomain: "orbito-a7c1d.firebaseapp.com",
-  projectId: "orbito-a7c1d",
-  storageBucket: "orbito-a7c1d.firebasestorage.app",
-  messagingSenderId: "83395229819",
-  appId: "1:83395229819:web:7c99c516974781083f8ade",
-  measurementId: "G-H3238BRN5N"
+  apiKey: env.VITE_FIREBASE_API_KEY || "",
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || "",
+  projectId: env.VITE_FIREBASE_PROJECT_ID || "",
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || "",
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+  appId: env.VITE_FIREBASE_APP_ID || "",
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || ""
 };
+
+const hasFirebaseConfig = [
+  firebaseConfig.apiKey,
+  firebaseConfig.authDomain,
+  firebaseConfig.projectId,
+  firebaseConfig.storageBucket,
+  firebaseConfig.messagingSenderId,
+  firebaseConfig.appId
+].every(Boolean);
 
 let app, auth, db;
 try {
+  if (!hasFirebaseConfig) {
+    throw new Error("Missing Firebase env values. Copy .env.example to .env and fill in the VITE_FIREBASE_* entries.");
+  }
+
   app = initializeApp(firebaseConfig);
   auth = getAuth(app);
   db = getFirestore(app);
@@ -25,7 +87,7 @@ try {
     collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, onSnapshot, query, where, writeBatch
   };
 } catch (e) {
-  console.error("Firebase init error (Did you add your config?):", e);
+  console.error("Firebase init error (check your env configuration):", e);
 }
 
 window.AuthModule = {
@@ -38,14 +100,13 @@ window.AuthModule = {
       googleBtn.addEventListener('click', () => this.signIn());
     }
 
+    const mainOfflineBtn = document.getElementById('mainOfflineBtn');
+    if (mainOfflineBtn) {
+      mainOfflineBtn.addEventListener('click', () => this.enterOfflineMode());
+    }
+
     if (!auth) {
-      document.getElementById('authOverlay').style.display = 'flex';
-      document.getElementById('authOverlay').innerHTML = `
-        <div class="auth-card" style="border: 2px solid var(--red)">
-          <h2>Configuration Missing</h2>
-          <p class="text-muted">Please add your Firebase Config to <code>auth.js</code></p>
-        </div>
-      `;
+      this.showOfflineUI();
       return;
     }
 
@@ -62,6 +123,44 @@ window.AuthModule = {
         this.userRole = null;
       }
     });
+  },
+
+  showOfflineUI() {
+    document.getElementById('authOverlay').style.display = 'flex';
+    document.getElementById('authOverlay').innerHTML = `
+      <div class="auth-card" style="border: 1px solid var(--border)">
+        <i class="fa-solid fa-cloud-slash fa-3x mb-4 text-amber"></i>
+        <h2>Offline / Local Mode</h2>
+        <p class="text-muted mb-4">Firebase connection is unconfigured or unavailable. You can proceed in local-only offline mode.</p>
+        <button id="workOfflineBtn" class="btn btn-primary" style="width:100%;justify-content:center"><i class="fa-solid fa-wifi-slash"></i> Work Offline</button>
+      </div>
+    `;
+    const btn = document.getElementById('workOfflineBtn');
+    if (btn) {
+      btn.addEventListener('click', () => this.enterOfflineMode());
+    }
+  },
+
+  enterOfflineMode() {
+    window.__orbito_offline = true;
+    this.currentUser = {
+      uid: 'offline_mentor',
+      id: 'offline_mentor',
+      name: 'Offline Mentor',
+      role: 'Mentor',
+      status: 'approved'
+    };
+    this.userRole = 'Mentor';
+    document.getElementById('authOverlay').style.display = 'none';
+    document.getElementById('pendingOverlay').style.display = 'none';
+    document.getElementById('app-container').style.display = 'flex';
+    
+    const currentUserNameEl = document.getElementById('currentUserName');
+    if (currentUserNameEl) currentUserNameEl.textContent = 'Offline Mentor';
+    
+    // Now initialize the app
+    App.init();
+    toast('Running in Local Offline Mode!', 'success');
   },
 
   canPerform(action) {
@@ -97,6 +196,10 @@ window.AuthModule = {
   },
 
   async signOut() {
+    if (window.__orbito_offline) {
+      location.reload();
+      return;
+    }
     try {
       await signOut(auth);
     } catch (error) {
@@ -139,8 +242,8 @@ window.AuthModule = {
       }
     } catch (e) {
       console.error("Error checking access:", e);
-      document.getElementById('authOverlay').style.display = 'flex';
-      document.getElementById('authOverlay').innerHTML += `<p class="text-red mt-4">Database Error: Make sure Firestore is enabled and rules allow read/write.</p>`;
+      this.showOfflineUI();
+      toast("Authentication failed. Switched to offline interface.", "error");
     }
   }
 };
@@ -149,3 +252,4 @@ window.AuthModule = {
 document.addEventListener('DOMContentLoaded', () => {
   window.AuthModule.init();
 });
+
