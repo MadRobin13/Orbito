@@ -35,6 +35,11 @@ const PartsModule = {
           </select>
         </div>
         <div class="toolbar-right">
+          <button class="btn btn-ghost" id="partsExportBtn" title="Export parts as JSON"><i class="fa-solid fa-download"></i> Export JSON</button>
+          <label class="btn btn-ghost" style="cursor:pointer" title="Import parts from JSON">
+            <i class="fa-solid fa-upload"></i> Import JSON
+            <input type="file" id="partsImportFile" accept=".json" style="display:none">
+          </label>
           <button class="btn btn-danger" id="bulkDeleteBtn" style="display:none"><i class="fa-solid fa-trash"></i> Delete Selected</button>
           <button class="btn btn-primary" id="addPartBtn"><i class="fa-solid fa-plus"></i> Add Part</button>
         </div>
@@ -47,6 +52,8 @@ const PartsModule = {
     document.getElementById('partsSearch').addEventListener('input', debounce(() => this.renderTable(), 250));
     document.getElementById('partsFilter').addEventListener('change', () => this.renderTable());
     document.getElementById('locFilter').addEventListener('change', () => this.renderTable());
+    document.getElementById('partsExportBtn').addEventListener('click', () => this.exportParts());
+    document.getElementById('partsImportFile').addEventListener('change', (e) => this.importParts(e));
 
     this.renderTable();
   },
@@ -559,6 +566,135 @@ const PartsModule = {
     toast('Part deleted', 'success');
     await this.loadData();
     this.renderView();
+  },
+
+  // ── Parts JSON Export ──
+  exportParts() {
+    if (this.parts.length === 0) {
+      toast('No parts to export.', 'error');
+      return;
+    }
+    // Strip large base64 drawings to keep file small; keep onshapeUrl links
+    const exportData = this.parts.map(p => {
+      const copy = { ...p };
+      if (copy.drawings && copy.drawings.length > 0) {
+        copy._drawingsCount = copy.drawings.length;
+        delete copy.drawings; // omit heavy base64 blobs
+      }
+      if (copy.photo && copy.photo.startsWith('data:')) {
+        delete copy.photo; // omit base64 photo
+      }
+      return copy;
+    });
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      parts: exportData
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `orbito-parts-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(`Exported ${exportData.length} parts.`, 'success');
+  },
+
+  // ── Parts JSON Import ──
+  async importParts(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    // Reset input so the same file can be re-imported
+    e.target.value = '';
+
+    let payload;
+    try {
+      const text = await file.text();
+      payload = JSON.parse(text);
+    } catch (err) {
+      toast('Invalid JSON file: ' + err.message, 'error');
+      return;
+    }
+
+    // Accept either { parts: [...] } wrapper format or a raw array
+    const incoming = Array.isArray(payload) ? payload
+      : Array.isArray(payload.parts) ? payload.parts
+      : null;
+
+    if (!incoming || incoming.length === 0) {
+      toast('No parts found in file.', 'error');
+      return;
+    }
+
+    const action = await new Promise(resolve => {
+      openModal(
+        'Import Parts',
+        `<p style="margin-bottom:12px">Found <strong>${incoming.length}</strong> part(s) in <em>${escapeHTML(file.name)}</em>.</p>
+        <p class="text-sm text-muted" style="margin-bottom:16px">Choose how to handle existing parts:</p>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="radio" name="importMode" value="merge" checked>
+            <div>
+              <div style="font-weight:500">Merge (recommended)</div>
+              <div class="text-sm text-muted">Update matching parts by ID; add new ones. Existing parts not in the file are kept.</div>
+            </div>
+          </label>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+            <input type="radio" name="importMode" value="replace">
+            <div>
+              <div style="font-weight:500">Replace all</div>
+              <div class="text-sm text-muted">Delete ALL current parts first, then import. This cannot be undone.</div>
+            </div>
+          </label>
+        </div>`,
+        `<button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+         <button class="btn btn-primary" id="confirmImportBtn">Import</button>`
+      );
+      document.getElementById('confirmImportBtn').addEventListener('click', () => {
+        const mode = document.querySelector('input[name="importMode"]:checked')?.value || 'merge';
+        closeModal();
+        resolve(mode);
+      });
+      // If user closes modal without confirming
+      const observer = new MutationObserver(() => {
+        if (!document.getElementById('confirmImportBtn')) {
+          observer.disconnect();
+          resolve(null);
+        }
+      });
+      observer.observe(document.getElementById('modalOverlay'), { childList: true, subtree: true });
+    });
+
+    if (!action) return; // cancelled
+
+    try {
+      if (action === 'replace') {
+        await DB.clearStore('parts');
+      }
+
+      let added = 0, updated = 0;
+      for (const part of incoming) {
+        if (!part.id) {
+          part.id = crypto.randomUUID ? crypto.randomUUID() : ('id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+          added++;
+        } else {
+          const exists = this.parts.find(p => p.id === part.id);
+          exists ? updated++ : added++;
+        }
+        await DB.put('parts', part);
+      }
+
+      if (window.HistoryModule) {
+        HistoryModule.log('import', 'part', 'bulk', `${incoming.length} parts`, `${action}: +${added} new, ~${updated} updated`);
+      }
+
+      toast(`Import complete: ${added} added, ${updated} updated.`, 'success');
+      await this.loadData();
+      this.renderView();
+    } catch (err) {
+      toast('Import failed: ' + err.message, 'error');
+    }
   }
 };
 
