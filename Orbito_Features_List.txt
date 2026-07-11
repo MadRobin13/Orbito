@@ -7,15 +7,17 @@ ORBITO SYSTEM FEATURES
 
 CORE SYSTEM & ARCHITECTURE
 [x] Works fully offline using the browser's IndexedDB.
-[x] Backup and restore data to/from a single JSON file.
-[x] PIN-based login with roles.
+[x] Backup and restore data to/from a single JSON file (v2 metadata, optional PII exclusion).
+[x] Google OAuth sign-in with offline fallback.
+[ ] PIN-based login with roles (planned; not implemented).
 [x] Mobile friendly responsive layout.
 [x] Hidden developer command: Cmd + Shift + Option + K spawns a cat image.
 [ ] Better mobile compatibility. Swipe to close sidebar menu.
-[ ] Sign out tab in settings.
+[x] Sign out tab in settings.
 
 IDENTITY & PERMISSIONS
-[x] Role categories: Captain, Lead, Mentor, Member.
+[x] Role categories: Mentor, Lead, Student (Captain-style "Member" role merged into Student historically).
+[ ] Mentor approval screen for new user signups (infrastructure present: pending_actions store and History tab; wired up only for users who self-register via the existing flow).
 [ ] Leads have near-mentor privileges except for very high privilege actions.
 [ ] Certain decisions require mentor approval before taking effect.
 [ ] History/notification feed of all changes made across the system.
@@ -52,7 +54,7 @@ TOOL CHECKOUT
 TEAM ROSTER & PEOPLE
 [x] Team directory with roles and contact info.
 [x] Profiles show assigned tasks and checked out tools.
-[x] Mentor approval screen for new user signups.
+[x] Each person has an editable Active / Pending status.
 [ ] Assign people to parts, not just tasks and tools.
 
 KANBAN TASKS

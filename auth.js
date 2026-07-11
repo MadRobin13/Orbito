@@ -20,8 +20,34 @@ function parseEnvText(text) {
   return parsed;
 }
 
+function getDeviceId() {
+  let devId = localStorage.getItem('orbito_device_id');
+  if (!devId) {
+    devId = 'dev_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
+    localStorage.setItem('orbito_device_id', devId);
+  }
+  return devId;
+}
+
+function getClientPlatform() {
+  const ua = navigator.userAgent || '';
+  const platform =
+    /Windows/i.test(ua) ? 'Windows' :
+    /Mac/i.test(ua) ? 'macOS' :
+    /Linux/i.test(ua) && !/Android/i.test(ua) ? 'Linux' :
+    /Android/i.test(ua) ? 'Android' :
+    /iPhone|iPad|iPod/i.test(ua) ? 'iOS' :
+    'Unknown';
+  const browser =
+    /Edg\//i.test(ua) ? 'Edge' :
+    /Chrome\//i.test(ua) && !/Edg\//i.test(ua) ? 'Chrome' :
+    /Firefox\//i.test(ua) ? 'Firefox' :
+    /Safari\//i.test(ua) && !/Chrome\//i.test(ua) ? 'Safari' :
+    'Unknown';
+  return `${platform} / ${browser}`;
+}
+
 async function loadFirebaseEnv() {
-  const runtimeEnv = (typeof window !== "undefined" && window.__ORBITO_ENV__) ? window.__ORBITO_ENV__ : {};
 
   // import.meta.env is a Vite/bundler-only API — it throws on plain HTTP servers.
   // Safely read it without crashing when served via python -m http.server.
@@ -123,6 +149,99 @@ try {
 window.AuthModule = {
   currentUser: null,
   userRole: null,
+  currentSession: null,
+
+  // Record a new session in local IndexedDB (and best-effort Firestore if online).
+  // Called from checkUserAccess (Google OAuth), enterOfflineMode, and indirectly
+  // from any sign-in flow. Never blocks sign-in if DB writes fail.
+  async recordSignIn(user, mode /* 'online' | 'offline' */) {
+    // Cancel any heartbeat from a previous session so we don't leak timers
+    // across refreshes or re-logins in the same tab.
+    if (this._heartbeatTimer) {
+      clearInterval(this._heartbeatTimer);
+      this._heartbeatTimer = null;
+    }
+    try {
+      const session = {
+        id: (window.uid ? window.uid() : (crypto.randomUUID ? crypto.randomUUID() : ('sess_' + Date.now()))),
+        userId: user.uid || user.id,
+        userName: user.name || user.displayName || 'Unknown',
+        role: user.role || 'Student',
+        mode: mode || (window.__orbito_offline ? 'offline' : 'online'),
+        deviceId: getDeviceId(),
+        platform: getClientPlatform(),
+        startedAt: Date.now(),
+        endedAt: null,
+        lastActiveAt: Date.now()
+      };
+      this.currentSession = session;
+
+      // Local write (always)
+      if (window.DB && window.DB.add) {
+        window.DB.add('sessions', session).catch(e => console.warn('Local session write failed:', e));
+      }
+
+      // Activity feed (always)
+      if (window.HistoryModule && window.HistoryModule.log) {
+        window.HistoryModule.log('signin', 'session', session.id, session.userName, `${session.mode} · ${session.platform}`).catch(() => {});
+      }
+
+      // Cloud mirror (best-effort, only when Firebase is live)
+      if (window.fsdb && window.FirebaseMethods && !window.__orbito_offline) {
+        try {
+          const { collection, doc, setDoc } = window.FirebaseMethods;
+          await setDoc(doc(collection(window.fsdb, 'sessions'), session));
+        } catch (e) {
+          console.warn('Cloud session mirror failed:', e);
+        }
+      }
+
+      // Heartbeat: keep lastActiveAt fresh while the page is open
+      this._heartbeatTimer = setInterval(() => {
+        if (!this.currentSession) return;
+        this.currentSession.lastActiveAt = Date.now();
+        if (window.DB && window.DB.put) {
+          window.DB.put('sessions', this.currentSession).catch(() => {});
+        }
+      }, 60_000);
+      // Don't let the heartbeat keep the page alive after we tab away.
+      if (typeof window !== 'undefined') {
+        window.addEventListener('beforeunload', () => {
+          if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+        }, { once: true });
+      }
+    } catch (e) {
+      console.warn('Could not record sign-in:', e);
+    }
+  },
+
+  async recordSignOut(reason) {
+    const session = this.currentSession;
+    if (!session) return;
+    const userName = this.currentUser?.name || session.userName;
+    try {
+      session.endedAt = Date.now();
+      session.endReason = reason || 'user';
+      // Local
+      await window.DB.put('sessions', session).catch(e => console.warn('Local session end write failed:', e));
+      // Activity
+      await window.HistoryModule.log('signout', 'session', session.id, userName, `${session.mode} · ${session.platform} (${reason || 'user'})`).catch(() => {});
+      // Cloud mirror (best-effort)
+      if (window.fsdb && window.FirebaseMethods && !window.__orbito_offline) {
+        try {
+          const { collection, doc, setDoc } = window.FirebaseMethods;
+          await setDoc(doc(collection(window.fsdb, 'sessions'), session));
+        } catch (e) {}
+      }
+      if (this._heartbeatTimer) {
+        clearInterval(this._heartbeatTimer);
+        this._heartbeatTimer = null;
+      }
+      this.currentSession = null;
+    } catch (e) {
+      console.warn('Could not record sign-out:', e);
+    }
+  },
 
   init() {
     const googleBtn = document.getElementById('googleSignInBtn');
@@ -271,14 +390,15 @@ window.AuthModule = {
     document.getElementById('authOverlay').style.display = 'none';
     document.getElementById('pendingOverlay').style.display = 'none';
     document.getElementById('app-container').style.display = 'flex';
-    
+
     const currentUserNameEl = document.getElementById('currentUserName');
     if (currentUserNameEl) currentUserNameEl.textContent = 'Offline Mentor';
     const sidebarUser = document.getElementById('sidebarUser');
     if (sidebarUser) sidebarUser.style.display = '';
-    
+
     // Now initialize the app
     App.init();
+    this.recordSignIn(this.currentUser, 'offline');
     toast('Running in Local Offline Mode!', 'success');
   },
 
@@ -315,6 +435,7 @@ window.AuthModule = {
   },
 
   async signOut() {
+    await this.recordSignOut('user');
     if (window.__orbito_offline) {
       location.reload();
       return;
@@ -348,15 +469,17 @@ window.AuthModule = {
           this.currentUser = userData;
           this.userRole = userData.role;
           document.getElementById('app-container').style.display = 'flex';
-          
+
           // Show user info in sidebar
           const currentUserNameEl = document.getElementById('currentUserName');
           if (currentUserNameEl) currentUserNameEl.textContent = userData.name;
           const sidebarUser = document.getElementById('sidebarUser');
           if (sidebarUser) sidebarUser.style.display = '';
-          
+
           // Now initialize the app
           App.init();
+          // Record the sign-in session (offline-style failover already handled elsewhere)
+          this.recordSignIn(userData, 'online');
         } else {
           document.getElementById('pendingOverlay').style.display = 'flex';
         }

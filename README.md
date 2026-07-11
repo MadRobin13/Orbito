@@ -4,6 +4,7 @@ A fully offline, browser-based management system designed for robotics teams to 
 
 ## Features
 
+- **Authentication:** Single sign-on via Google (Firebase Auth). Role-based access control with Mentor / Lead / Student tiers.
 - **Projects:** Manage top-level projects and sub-projects. Track completion progress across assigned tasks.
 - **Parts / Inventory:** Track part quantities, locations, vendors, and photos. Quickly adjust stock levels.
 - **Bill of Materials (BOM):** Build BOMs for specific projects, track part procurement statuses, compute line totals, and export as CSV.
@@ -13,7 +14,7 @@ A fully offline, browser-based management system designed for robotics teams to 
 - **Tasks (Kanban):** Simple kanban board to track tasks by assignee and project.
 - **Workspace Map:** Visually lay out your shop with zones, and click a zone to see the parts and tools located there.
 - **Local First:** Uses modern IndexedDB. No backend required. Works offline.
-- **Import / Export:** Easily backup all your team data to a JSON file and load it on another device.
+- **Import / Export:** Easily backup all your team data to a JSON file and load it on another device. Optionally exclude PII (emails, contact info) when exporting for sharing.
 
 ## How to Run
 

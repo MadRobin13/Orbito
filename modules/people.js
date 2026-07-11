@@ -58,7 +58,7 @@ const PeopleModule = {
     grid.innerHTML = filtered.map(p => {
       const pTasks = this.tasks.filter(t => t.assigneeId === p.id && t.status !== 'done');
       const pTools = this.tools.filter(t => t.checkedOutBy === p.id);
-      const roleColors = { 'Mentor': 'amber', 'Lead': 'blue', 'Student': 'gray', 'Captain': 'purple', 'Member': 'gray' };
+      const roleColors = { 'Mentor': 'amber', 'Lead': 'blue', 'Student': 'gray', 'Member': 'gray' };
       const isPending = p.status === 'pending';
       const isMentor = AuthModule && AuthModule.canPerform('approve_users');
 
@@ -87,6 +87,8 @@ const PeopleModule = {
   async showAddModal(id = null) {
     const p = id ? this.people.find(x => x.id === id) : {};
     
+    const canApprove = AuthModule && AuthModule.canPerform('approve_users');
+    const currentStatus = p.status || 'approved';
     const body = `
       <form id="personForm">
         <div class="form-group">
@@ -103,8 +105,15 @@ const PeopleModule = {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">PIN (Optional login)</label>
-            <input type="password" class="form-input" id="personPin" value="${escapeHTML(p.pin || '')}" placeholder="4 digits">
+            <label class="form-label">Status</label>
+            ${canApprove
+              ? `<select class="form-select" id="personStatus">
+                  <option value="approved" ${currentStatus !== 'pending' ? 'selected' : ''}>Active</option>
+                  <option value="pending" ${currentStatus === 'pending' ? 'selected' : ''}>Pending Approval</option>
+                </select>`
+              : `<p class="text-sm" id="personStatusDisplay" data-status="${currentStatus}">${currentStatus === 'pending' ? 'Pending Approval' : 'Active'}</p>
+                 <p class="text-xs text-muted" style="margin-top:4px">Only Mentors can change account status.</p>`
+            }
           </div>
         </div>
         <div class="form-group mt-2">
@@ -128,36 +137,49 @@ const PeopleModule = {
       return toast('Name is required', 'error');
     }
 
+    const canApprove = AuthModule && AuthModule.canPerform('approve_users');
+    // Read the status from the DOM (savePerson is a module method, not a
+    // closure inside showAddModal, so it cannot reach the local `p` variable).
+    // The Mentor-only branch exposes a `<select id="personStatus">`; the
+    // read-only branch exposes a `<p id="personStatusDisplay" data-status="…">`
+    // whose data attribute holds the canonical status ('approved' | 'pending').
+    let status = 'approved';
+    if (canApprove) {
+      const sel = document.getElementById('personStatus');
+      if (sel) status = sel.value;
+    } else {
+      const ro = document.getElementById('personStatusDisplay');
+      if (ro && ro.dataset.status) status = ro.dataset.status;
+    }
+
     const data = {
       id: id || undefined,
       name,
       role: document.getElementById('personRole').value,
-      pin: document.getElementById('personPin').value,
+      status,
       contact: document.getElementById('personContact').value.trim()
-    };
+    };      try {
+        if (id) {
+          await DB.put('users', data);
+          toast('Person updated', 'success');
+          HistoryModule.log('update', 'user', id, name);
+        } else {
+          await DB.add('users', data);
+          toast('Person added', 'success');
+          HistoryModule.log('create', 'user', data.id || '', name);
+        }
 
-    try {
-      if (id) {
-        await DB.put('users', data);
-        toast('Person updated', 'success');
-        HistoryModule.log('update', 'user', id, name);
-      } else {
-        await DB.add('users', data);
-        toast('Person added', 'success');
-        HistoryModule.log('create', 'user', data.id || '', name);
+        closeModal();
+        await this.loadData();
+        if (this.currentPerson && this.currentPerson.id === id) {
+          this.showDetail(id);
+        } else {
+          this.renderView();
+        }
+      } catch (err) {
+        if (btn) btn.disabled = false;
+        toast('Error saving person', 'error');
       }
-      
-      closeModal();
-      await this.loadData();
-      if (this.currentPerson && this.currentPerson.id === id) {
-        this.showDetail(id);
-      } else {
-        this.renderView();
-      }
-    } catch (err) {
-      if (btn) btn.disabled = false;
-      toast('Error saving person', 'error');
-    }
   },
 
   showDetail(id) {
@@ -167,7 +189,7 @@ const PeopleModule = {
     const p = this.currentPerson;
     const pTasks = this.tasks.filter(t => t.assigneeId === p.id);
     const pTools = this.tools.filter(t => t.checkedOutBy === p.id);
-    const roleColors = { 'Mentor': 'amber', 'Lead': 'blue', 'Student': 'gray', 'Captain': 'purple', 'Member': 'gray' };
+    const roleColors = { 'Mentor': 'amber', 'Lead': 'blue', 'Student': 'gray', 'Member': 'gray' };
 
     this.container.innerHTML = `
       <div class="mb-4">

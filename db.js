@@ -5,10 +5,10 @@ const LocalDB = {
   init() {
     return new Promise((resolve, reject) => {
       if (this._db) return resolve(this._db);
-      const req = indexedDB.open('orbito_local_db', 1);
+      const req = indexedDB.open('orbito_local_db', 2);
       req.onupgradeneeded = (e) => {
         const db = e.target.result;
-        const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items', 'history', 'walk_logs', 'pending_actions'];
+        const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items', 'history', 'walk_logs', 'pending_actions', 'sessions'];
         stores.forEach(s => {
           if (!db.objectStoreNames.contains(s)) {
             db.createObjectStore(s, { keyPath: 'id' });
@@ -178,11 +178,28 @@ const DB = {
     return actionData.id;
   },
 
-  async exportAll() {
+  async exportAll(options = {}) {
+    const excludePII = !!options.excludePII;
     const stores = ['parts', 'projects', 'vendors', 'locations', 'tools', 'users', 'tasks', 'settings', 'bom_items'];
-    const data = {};
+    const data = {
+      _metadata: {
+        version: 2,
+        piiIncluded: !excludePII,
+        exportDate: new Date().toISOString(),
+        app: 'Orbito'
+      }
+    };
     for (const store of stores) {
-      data[store] = await this.getAll(store);
+      let records = await this.getAll(store);
+      if (excludePII) {
+        if (store === 'users') {
+          records = records.map(({ email, contact, pin, ...rest }) => rest);
+        }
+        if (store === 'vendors') {
+          records = records.map(({ contact, ...rest }) => rest);
+        }
+      }
+      data[store] = records;
     }
     return data;
   },
@@ -209,7 +226,9 @@ const DB = {
     for (const store of storesToClear) {
       await this.clearStore(store);
     }
+    // Ignore internal metadata block during import (it's an export annotation only).
     for (const store of Object.keys(data)) {
+      if (store === '_metadata') continue;
       if (store === 'users' || store === 'vendors' || store === 'settings') {
         continue; // Skip importing/overwriting these to keep existing people and shop data!
       }
@@ -220,13 +239,14 @@ const DB = {
       }
     }
 
-    // Restore current user if they were deleted
+    // Restore current user if they were deleted. Preserve their original role/status
+    // so we don't accidentally privilege-escalate a Student or Lead to Mentor.
     if (currentUserDoc && currentUid) {
       await this.put('users', {
         id: currentUid,
         ...currentUserDoc,
-        status: 'approved',
-        role: 'Mentor'
+        status: currentUserDoc.status || 'approved',
+        role: currentUserDoc.role || 'Student'
       });
     }
   }

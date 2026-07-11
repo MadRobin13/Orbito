@@ -101,11 +101,11 @@ const WorkspaceModule = {
           existing.x = box.x; existing.y = box.y; existing.w = box.w; existing.h = box.h; existing.name = box.name;
           await DB.put('locations', existing);
         } else {
-          await DB.put('locations', {
-            id: box.id, name: box.name,
-            x: box.x, y: box.y, w: box.w, h: box.h,
-            type: 'workspace', color: '#3b82f6', photo: '', containers: []
-          });
+        await DB.put('locations', {
+          id: box.id, name: box.name,
+          x: box.x, y: box.y, w: box.w, h: box.h,
+          type: 'workspace', color: '#3b82f6', photo: '', containers: []
+        });
           HistoryModule.log('create', 'zone', box.id, box.name, 'Created via map draw');
         }
       }
@@ -416,6 +416,11 @@ const WorkspaceModule = {
     const containers = loc.containers || [];
     const container = part.containerId ? containers.find(c => c.name === part.containerId) : null;
 
+    // Auth gate: only allow the signed-in user to log walk arrivals.
+    if (!AuthModule || !AuthModule.currentUser) {
+      return toast('Sign in to use walk-to-part navigation.', 'error');
+    }
+
     let step = 1;
     const totalSteps = container ? 3 : 2;
 
@@ -513,12 +518,17 @@ const WorkspaceModule = {
 
   async confirmArrived(partId) {
     const part = this.parts.find(p => p.id === partId);
+    const user = AuthModule?.currentUser;
+    if (!user) {
+      toast('Sign in to log an arrival.', 'error');
+      return;
+    }
     try {
       await DB.add('walk_logs', {
         partId,
         partName: part?.name || '',
-        userId: AuthModule.currentUser?.uid || '',
-        userName: AuthModule.currentUser?.name || '',
+        userId: user.uid || user.id || '',
+        userName: user.name || '',
         timestamp: Date.now()
       });
       HistoryModule.log('arrived', 'part', partId, part?.name || '', 'Confirmed arrival at part location');
@@ -613,7 +623,7 @@ const WorkspaceModule = {
       // Create template zones
       for (const zone of template.zones) {
         await DB.put('locations', {
-          id: crypto.randomUUID ? crypto.randomUUID() : ("zone_" + Date.now() + "_" + Math.random().toString(36).substr(2, 9)),
+          id: window.uid ? window.uid() : ('zone_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11)),
           name: zone.name,
           type: zone.type,
           color: zone.color,

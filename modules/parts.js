@@ -664,9 +664,7 @@ const PartsModule = {
         }
       });
       observer.observe(document.getElementById('modalOverlay'), { childList: true, subtree: true });
-    });
-
-    if (!action) return; // cancelled
+    });    if (!action) return; // cancelled
 
     try {
       if (action === 'replace') {
@@ -676,7 +674,7 @@ const PartsModule = {
       let added = 0, updated = 0;
       for (const part of incoming) {
         if (!part.id) {
-          part.id = crypto.randomUUID ? crypto.randomUUID() : ('id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+          part.id = (window.uid ? window.uid() : (crypto.randomUUID ? crypto.randomUUID() : ('id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11))));
           added++;
         } else {
           const exists = this.parts.find(p => p.id === part.id);

@@ -95,7 +95,7 @@ function getStockChip(inStock, needed, partId) {
   if (perc >= thresholds.high) cls = 'stock-full';
   else if (perc >= thresholds.medium) cls = 'stock-green';
   else if (perc >= thresholds.low) cls = 'stock-yellow';
-  
+
   return `<span class="stock-chip ${cls}" data-part-id="${partId}" title="${inStock}/${needed}">${inStock}/${needed}</span>`;
 }
 
@@ -109,11 +109,38 @@ function initials(name) {
   return name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
 }
 
+// ── Security / Encoding Helpers ──
 function escapeHTML(str) {
   const d = document.createElement('div');
   d.textContent = str || '';
   return d.innerHTML;
 }
+
+// escapeAttr escapes a string for safe interpolation into an HTML attribute value
+// (double-quoted). Use this for any ${dynamic} inside `onclick="…"`, `href="…"`,
+// `src="…"`, etc., instead of plain escapeHTML.
+function escapeAttr(str) {
+  return (str == null ? '' : String(str))
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/`/g, '&#96;');
+}
+
+// Centralized UUID helper. Falls back to Math.random when crypto.randomUUID
+// isn't available (older browsers or insecure contexts).
+function uid() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return 'id_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
+}
+
+// Expose uid/uid() on window so feature-module scripts can reach it without
+// having to inline duplicate crypto.randomUUID fallbacks.
+window.uid = uid;
 
 function debounce(func, wait) {
   let timeout;
@@ -129,7 +156,7 @@ function debounce(func, wait) {
 
 // ── Dashboard ──
 async function renderDashboard(container) {
-  const [projects, parts, tools, people, tasks, vendors, locations] = await Promise.all([
+  const [projects, parts, tools, people, tasks, vendors, locations, sessions] = await Promise.all([
     DB.getAll('projects'),
     DB.getAll('parts'),
     DB.getAll('tools'),
@@ -137,6 +164,8 @@ async function renderDashboard(container) {
     DB.getAll('tasks'),
     DB.getAll('vendors'),
     DB.getAll('locations'),
+    // `sessions` was added in IndexedDB v2; swallow failure on legacy DBs.
+    DB.getAll('sessions').catch(() => []),
   ]);
 
   const topProjects = projects.filter(p => !p.parentId);
@@ -146,6 +175,15 @@ async function renderDashboard(container) {
   const totalInStock = parts.reduce((s, p) => s + (p.inStock || 0), 0);
   const totalNeeded = parts.reduce((s, p) => s + (p.needed || 0), 0);
   const checkedOut = tools.filter(t => t.checkedOutBy).length;
+
+  // Recent sign-ins for the current user. Match strictly on userId so a user
+  // with a non-unique display name (e.g. two "John Smith" students) does NOT
+  // see each other's sessions.
+  const myUid = AuthModule?.currentUser?.uid || AuthModule?.currentUser?.id;
+  const recentSessions = (sessions || [])
+    .filter(s => s.userId && myUid && s.userId === myUid)
+    .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
+    .slice(0, 5);
 
   container.innerHTML = `
     <div class="grid-4 mb-4">
@@ -175,7 +213,7 @@ async function renderDashboard(container) {
       </div>
     </div>
 
-    <div class="grid-2" style="margin-top:20px">
+    <div class="grid-3" style="margin-top:20px">
       <!-- Recent tasks -->
       <div class="card">
         <div class="card-header"><h3>Recent Tasks</h3></div>
@@ -209,6 +247,29 @@ async function renderDashboard(container) {
             `).join('')}
         </div>
       </div>
+
+      <!-- Recent Sign-Ins -->
+      <div class="card">
+        <div class="card-header">
+          <h3>Recent Sign-Ins</h3>
+          <span class="badge badge-${AuthModule?.currentSession?.mode === 'online' ? 'green' : 'amber'}" style="font-size:10px;margin-left:8px">
+            ${AuthModule?.currentSession?.mode === 'online' ? 'Google' : 'Offline'}
+          </span>
+        </div>
+        <div class="card-body" style="padding:0">
+          ${recentSessions.length === 0 ? '<div class="empty-state" style="padding:30px"><p>No session history</p></div>' :
+            recentSessions.map(s => `
+              <div style="padding:10px 16px;border-bottom:1px solid var(--border)">
+                <div style="display:flex;align-items:center;justify-content:space-between">
+                  <div style="font-size:13px;font-weight:500"><i class="fa-solid ${s.mode === 'online' ? 'fa-cloud' : 'fa-wifi'}" style="margin-right:6px;color:${s.mode === 'online' ? 'var(--green)' : 'var(--amber)'}" ></i>${escapeHTML(s.mode)}</div>
+                  <div style="font-size:11px;color:var(--text-3)">${HistoryModule?.timeAgo ? HistoryModule.timeAgo(s.startedAt) : formatDate(s.startedAt)}</div>
+                </div>
+                <div style="font-size:11px;color:var(--text-3);margin-top:4px">${escapeHTML(s.platform || '')}</div>
+                ${s.endedAt ? `<div style="font-size:11px;color:var(--text-3);margin-top:2px"><i class="fa-solid fa-arrow-right-from-bracket" style="margin-right:4px"></i>Ended ${HistoryModule?.timeAgo ? HistoryModule.timeAgo(s.endedAt) : formatDate(s.endedAt)}</div>` : '<div style="font-size:11px;color:var(--green);margin-top:2px"><i class="fa-solid fa-circle" style="margin-right:4px"></i>Active</div>'}
+              </div>
+            `).join('')}
+        </div>
+      </div>
     </div>
 
     <div class="card" style="margin-top:20px">
@@ -226,7 +287,7 @@ async function renderDashboard(container) {
 
 async function renderSettings(container) {
   const user = AuthModule.currentUser;
-  
+
   container.innerHTML = `
     <div style="max-width:600px">
       <div class="card" style="margin-bottom:20px">
@@ -237,6 +298,18 @@ async function renderSettings(container) {
             <div>
               <div style="font-weight:500">${escapeHTML(user?.name)}</div>
               <div class="text-sm text-muted">${escapeHTML(user?.email)} &bull; ${escapeHTML(user?.role)}</div>
+              <div class="text-xs text-muted" style="margin-top:6px">
+                <i class="fa-solid fa-clock" style="margin-right:4px"></i>
+                Last sign-in: ${
+                  window.AuthModule?.currentSession?.startedAt
+                    ? (HistoryModule?.timeAgo ? HistoryModule.timeAgo(window.AuthModule.currentSession.startedAt) : formatDate(window.AuthModule.currentSession.startedAt))
+                    : '—'
+                }
+              </div>
+              <div class="text-xs text-muted" style="margin-top:2px">
+                <i class="fa-solid fa-display" style="margin-right:4px"></i>
+                This device: ${escapeHTML(window.AuthModule?.currentSession?.platform || '—')}
+              </div>
             </div>
           </div>
           <button class="btn btn-secondary" onclick="AuthModule.signOut()"><i class="fa-solid fa-arrow-right-from-bracket"></i> Sign Out</button>
@@ -287,7 +360,17 @@ async function renderSettings(container) {
       <div class="card" style="margin-bottom:20px">
         <div class="card-header"><h3>Export Data</h3></div>
         <div class="card-body">
-          <p class="text-sm text-muted" style="margin-bottom:12px">Download all your Orbito data as a JSON file. You can use this to back up or transfer data.</p>
+          <p class="text-sm text-muted" style="margin-bottom:12px">Download all your Orbito data as a JSON file. Backups include people names, emails, and contact info by default &mdash; uncheck the box below to strip PII before exporting for sharing.</p>
+          <div style="margin-bottom:12px">
+            <label class="flex items-center gap-2" style="cursor:pointer">
+              <input type="checkbox" id="exportIncludePII" checked style="accent-color:var(--accent)">
+              <span class="text-sm">Include email and contact info (PII)</span>
+            </label>
+            <label class="flex items-center gap-2" style="cursor:pointer;margin-top:6px">
+              <input type="checkbox" id="exportAcknowledged" style="accent-color:var(--accent)">
+              <span class="text-sm">I understand this backup may contain personally identifiable information.</span>
+            </label>
+          </div>
           <button class="btn btn-primary" id="exportBtn"><i class="fa-solid fa-download"></i> Export JSON</button>
         </div>
       </div>
@@ -342,13 +425,25 @@ async function renderSettings(container) {
   });
 
   document.getElementById('exportBtn').addEventListener('click', async () => {
-    const data = await DB.exportAll();
+    const includePII = document.getElementById('exportIncludePII').checked;
+    const acknowledged = document.getElementById('exportAcknowledged').checked;
+
+    // If PII is included, force an explicit acknowledgement so users understand
+    // that the resulting JSON contains emails and contact info for the team.
+    if (includePII && !acknowledged) {
+      return toast('Please tick the acknowledgement box before exporting PII.', 'error');
+    }
+
+    const data = await DB.exportAll({ excludePII: !includePII });
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `orbito-backup-${new Date().toISOString().slice(0,10)}.json`;
-    a.click(); URL.revokeObjectURL(url);
-    toast('Data exported!', 'success');
+    const stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `orbito-backup-${includePII ? 'full' : 'no-pii'}-${stamp}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast(includePII ? 'Data exported (with PII).' : 'Data exported (PII excluded).', 'success');
   });
 
   document.getElementById('importFile').addEventListener('change', async (e) => {
@@ -394,172 +489,15 @@ async function renderSettings(container) {
   });
 }
 
-window.App = {
-  async init() {
-    // Theme init
-    const savedTheme = localStorage.getItem('orbito-theme');
-    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
-
-    // Load stock thresholds
-    try {
-      const settingsList = await DB.getAll('settings');
-      const thresholds = settingsList.find(s => s.id === 'stockThresholds');
-      if (thresholds) {
-        window.__stockThresholds = {
-          high: thresholds.high ?? 80,
-          medium: thresholds.medium ?? 50,
-          low: thresholds.low ?? 10
-        };
-      } else {
-        window.__stockThresholds = { high: 80, medium: 50, low: 10 };
-      }
-    } catch (e) {
-      console.error("Failed to load stock thresholds:", e);
-      window.__stockThresholds = { high: 80, medium: 50, low: 10 };
-    }
-
-    // Event delegation for stock chips quick edit
-    document.body.addEventListener('click', async (e) => {
-      const chip = e.target.closest('.stock-chip');
-      if (chip) {
-        e.preventDefault();
-        e.stopPropagation();
-        const partId = chip.dataset.partId;
-        if (partId) {
-          try {
-            const partsList = await DB.getAll('parts');
-            const part = partsList.find(p => p.id === partId);
-            if (!part) return;
-            
-            openModal('Quick Edit Stock', `
-              <div style="display:flex; flex-direction:column; gap:12px; padding: 10px 0;">
-                <div>
-                  <label class="form-label">In Stock</label>
-                  <input type="number" id="quickInStock" class="form-input" value="${part.inStock || 0}" min="0">
-                </div>
-                <div>
-                  <label class="form-label">Needed</label>
-                  <input type="number" id="quickNeeded" class="form-input" value="${part.needed || 0}" min="0">
-                </div>
-              </div>
-            `, `
-              <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-              <button class="btn btn-primary" id="saveQuickStockBtn">Save</button>
-            `);
-            
-            document.getElementById('saveQuickStockBtn').addEventListener('click', async () => {
-              const inStock = parseInt(document.getElementById('quickInStock').value) || 0;
-              const needed = parseInt(document.getElementById('quickNeeded').value) || 0;
-              
-              part.inStock = inStock;
-              part.needed = needed;
-              await DB.put('parts', part);
-              toast('Stock updated!', 'success');
-              if (window.HistoryModule) {
-                HistoryModule.log('update', 'part', partId, part.name, `Stock: ${inStock}/${needed}`);
-              }
-              closeModal();
-              
-              // Refresh active view
-              if (currentView === 'parts' && window.PartsModule) {
-                await PartsModule.loadData();
-                PartsModule.renderView();
-              } else if (currentView === 'spreadsheet' && window.SpreadsheetModule) {
-                await SpreadsheetModule.loadData();
-                SpreadsheetModule.renderRows();
-              } else if (currentView === 'bom' && window.BomModule) {
-                await BomModule.loadData();
-                if (document.getElementById('bomProjectSelect')) {
-                  const selVal = document.getElementById('bomProjectSelect').value;
-                  if (selVal) BomModule.renderBomForProject(selVal);
-                }
-              } else if (currentView === 'dashboard') {
-                navigate('dashboard');
-              }
-            });
-          } catch (err) {
-            console.error("Error loading part for quick edit:", err);
-          }
-        }
-      }
-    });
-
-    // Sidebar nav clicks
-    document.querySelectorAll('.nav-item[data-view]').forEach(el => {
-      el.addEventListener('click', (e) => {
-        e.preventDefault();
-        navigate(el.dataset.view);
-      });
-    });
-
-    // Modal close
-    document.getElementById('modalClose').addEventListener('click', closeModal);
-    document.getElementById('modalOverlay').addEventListener('click', (e) => {
-      if (e.target === e.currentTarget) closeModal();
-    });
-
-    // Mobile sidebar toggle
-    const toggle = document.getElementById('sidebarToggle');
-    const sidebar = document.getElementById('sidebar');
-    const sidebarOverlay = document.getElementById('sidebarOverlay');
-    
-    function toggleSidebar(force) {
-      const isOpen = sidebar.classList.toggle('open', force);
-      if (sidebarOverlay) sidebarOverlay.classList.toggle('show', isOpen);
-    }
-    
-    if (window.innerWidth <= 768) toggle.style.display = '';
-    toggle.addEventListener('click', () => toggleSidebar());
-    
-    if (sidebarOverlay) {
-      sidebarOverlay.addEventListener('click', () => toggleSidebar(false));
-    }
-    
-    // Swipe to close
-    let touchStartX = 0;
-    let touchEndX = 0;
-    document.addEventListener('touchstart', e => {
-      touchStartX = e.changedTouches[0].screenX;
-    }, {passive: true});
-    
-    document.addEventListener('touchend', e => {
-      touchEndX = e.changedTouches[0].screenX;
-      if (window.innerWidth <= 768 && sidebar.classList.contains('open')) {
-        // Swipe left
-        if (touchStartX - touchEndX > 50) {
-          toggleSidebar(false);
-        }
-      }
-    }, {passive: true});
-    
-    window.addEventListener('resize', () => {
-      toggle.style.display = window.innerWidth <= 768 ? '' : 'none';
-      if (window.innerWidth > 768) toggleSidebar(false);
-    });
-
-    // Auto close sidebar on nav for mobile
-    document.querySelectorAll('.nav-item[data-view]').forEach(el => {
-      el.addEventListener('click', () => {
-        if (window.innerWidth <= 768) toggleSidebar(false);
-      });
-    });
-
-    // Hash routing
-    const hash = location.hash.slice(1) || 'dashboard';
-    navigate(hash);
-
-    window.addEventListener('popstate', () => {
-      navigate(location.hash.slice(1) || 'dashboard');
-    });
-
+// ── Quick-Add Sketch modal (module scope so the inline onclick can find it) ──
 async function showQuickAddSketchModal() {
   const parts = await DB.getAll('parts');
   if (parts.length === 0) {
     toast("Please add at least one part first.", "error");
     return;
   }
-  const partOptions = parts.map(p => `<option value="${p.id}">${escapeHTML(p.name)}</option>`).join('');
-  
+  const partOptions = parts.map(p => `<option value="${escapeAttr(p.id)}">${escapeHTML(p.name)}</option>`).join('');
+
   openModal('Quick Add Sketch', `
     <div style="display:flex; flex-direction:column; gap:12px; padding: 10px 0;">
       <div class="form-group">
@@ -589,7 +527,7 @@ async function showQuickAddSketchModal() {
 
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
+
     ctx.strokeStyle = '#000000';
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
@@ -647,6 +585,165 @@ async function showQuickAddSketchModal() {
 }
 window.showQuickAddSketchModal = showQuickAddSketchModal;
 
+// ── App Object ──
+window.App = {
+  async init() {
+    // Theme init
+    const savedTheme = localStorage.getItem('orbito-theme');
+    if (savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+
+    // Load stock thresholds
+    try {
+      const settingsList = await DB.getAll('settings');
+      const thresholds = settingsList.find(s => s.id === 'stockThresholds');
+      if (thresholds) {
+        window.__stockThresholds = {
+          high: thresholds.high ?? 80,
+          medium: thresholds.medium ?? 50,
+          low: thresholds.low ?? 10
+        };
+      } else {
+        window.__stockThresholds = { high: 80, medium: 50, low: 10 };
+      }
+    } catch (e) {
+      console.error("Failed to load stock thresholds:", e);
+      window.__stockThresholds = { high: 80, medium: 50, low: 10 };
+    }
+
+    // Event delegation for stock chips quick edit
+    document.body.addEventListener('click', async (e) => {
+      const chip = e.target.closest('.stock-chip');
+      if (chip) {
+        e.preventDefault();
+        e.stopPropagation();
+        const partId = chip.dataset.partId;
+        if (partId) {
+          try {
+            const partsList = await DB.getAll('parts');
+            const part = partsList.find(p => p.id === partId);
+            if (!part) return;
+
+            openModal('Quick Edit Stock', `
+              <div style="display:flex; flex-direction:column; gap:12px; padding: 10px 0;">
+                <div>
+                  <label class="form-label">In Stock</label>
+                  <input type="number" id="quickInStock" class="form-input" value="${part.inStock || 0}" min="0">
+                </div>
+                <div>
+                  <label class="form-label">Needed</label>
+                  <input type="number" id="quickNeeded" class="form-input" value="${part.needed || 0}" min="0">
+                </div>
+              </div>
+            `, `
+              <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+              <button class="btn btn-primary" id="saveQuickStockBtn">Save</button>
+            `);
+
+            document.getElementById('saveQuickStockBtn').addEventListener('click', async () => {
+              const inStock = parseInt(document.getElementById('quickInStock').value) || 0;
+              const needed = parseInt(document.getElementById('quickNeeded').value) || 0;
+
+              part.inStock = inStock;
+              part.needed = needed;
+              await DB.put('parts', part);
+              toast('Stock updated!', 'success');
+              if (window.HistoryModule) {
+                HistoryModule.log('update', 'part', partId, part.name, `Stock: ${inStock}/${needed}`);
+              }
+              closeModal();
+
+              // Refresh active view
+              if (currentView === 'parts' && window.PartsModule) {
+                await PartsModule.loadData();
+                PartsModule.renderView();
+              } else if (currentView === 'spreadsheet' && window.SpreadsheetModule) {
+                await SpreadsheetModule.loadData();
+                SpreadsheetModule.renderRows();
+              } else if (currentView === 'bom' && window.BomModule) {
+                await BomModule.loadData();
+                if (document.getElementById('bomProjectSelect')) {
+                  const selVal = document.getElementById('bomProjectSelect').value;
+                  if (selVal) BomModule.renderBomForProject(selVal);
+                }
+              } else if (currentView === 'dashboard') {
+                navigate('dashboard');
+              }
+            });
+          } catch (err) {
+            console.error("Error loading part for quick edit:", err);
+          }
+        }
+      }
+    });
+
+    // Sidebar nav clicks
+    document.querySelectorAll('.nav-item[data-view]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        navigate(el.dataset.view);
+      });
+    });
+
+    // Modal close
+    document.getElementById('modalClose').addEventListener('click', closeModal);
+    document.getElementById('modalOverlay').addEventListener('click', (e) => {
+      if (e.target === e.currentTarget) closeModal();
+    });
+
+    // Mobile sidebar toggle
+    const toggle = document.getElementById('sidebarToggle');
+    const sidebar = document.getElementById('sidebar');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+    function toggleSidebar(force) {
+      const isOpen = sidebar.classList.toggle('open', force);
+      if (sidebarOverlay) sidebarOverlay.classList.toggle('show', isOpen);
+    }
+
+    if (window.innerWidth <= 768) toggle.style.display = '';
+    toggle.addEventListener('click', () => toggleSidebar());
+
+    if (sidebarOverlay) {
+      sidebarOverlay.addEventListener('click', () => toggleSidebar(false));
+    }
+
+    // Swipe to close
+    let touchStartX = 0;
+    let touchEndX = 0;
+    document.addEventListener('touchstart', e => {
+      touchStartX = e.changedTouches[0].screenX;
+    }, {passive: true});
+
+    document.addEventListener('touchend', e => {
+      touchEndX = e.changedTouches[0].screenX;
+      if (window.innerWidth <= 768 && sidebar.classList.contains('open')) {
+        // Swipe left
+        if (touchStartX - touchEndX > 50) {
+          toggleSidebar(false);
+        }
+      }
+    }, {passive: true});
+
+    window.addEventListener('resize', () => {
+      toggle.style.display = window.innerWidth <= 768 ? '' : 'none';
+      if (window.innerWidth > 768) toggleSidebar(false);
+    });
+
+    // Auto close sidebar on nav for mobile
+    document.querySelectorAll('.nav-item[data-view]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (window.innerWidth <= 768) toggleSidebar(false);
+      });
+    });
+
+    // Hash routing
+    const hash = location.hash.slice(1) || 'dashboard';
+    navigate(hash);
+
+    window.addEventListener('popstate', () => {
+      navigate(location.hash.slice(1) || 'dashboard');
+    });
+
     // Global FAB
     const fab = document.getElementById('globalFab');
     fab.style.display = '';
@@ -698,7 +795,7 @@ window.showQuickAddSketchModal = showQuickAddSketchModal;
     cmdInput.addEventListener('input', async (e) => {
       const q = e.target.value.toLowerCase().trim();
       if (!q) { cmdResults.innerHTML = ''; return; }
-      
+
       const [parts, projects, people, tasks] = await Promise.all([
         DB.getAll('parts'), DB.getAll('projects'), DB.getAll('users'), DB.getAll('tasks')
       ]);
@@ -714,14 +811,14 @@ window.showQuickAddSketchModal = showQuickAddSketchModal;
       } else {
         cmdResults.innerHTML = results.slice(0, 10).map((r, i) => `
           <div class="cmd-item" tabindex="0" onclick="window.cmdAction(${i})">
-            <i class="fa-solid ${r.icon}"></i>
+            <i class="fa-solid ${escapeAttr(r.icon)}"></i>
             <div>
               <div style="font-size:14px;font-weight:500">${escapeHTML(r.name)}</div>
-              <div style="font-size:11px;color:var(--text-3)">${r.type}</div>
+              <div style="font-size:11px;color:var(--text-3)">${escapeHTML(r.type)}</div>
             </div>
           </div>
         `).join('');
-        
+
         window.cmdAction = (i) => {
           cmdOverlay.classList.remove('open');
           results[i].action();
@@ -746,9 +843,9 @@ window.showQuickAddSketchModal = showQuickAddSketchModal;
         cat.style.borderRadius = '12px';
         cat.style.transform = 'rotate(15deg)';
         document.body.appendChild(cat);
-        
+
         setTimeout(() => { cat.style.top = '20px'; }, 100);
-        
+
         // Remove after a bit
         setTimeout(() => {
           cat.style.top = '-200px';
